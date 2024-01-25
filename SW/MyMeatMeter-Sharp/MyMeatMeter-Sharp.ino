@@ -44,6 +44,10 @@ const char *host = "smokehouse"; // Connect to http://smokehouse.local
 #define DELAYTIME 1   //seconds
 #define DEGREE_SIGN 0x8E
 
+#define MAX31856_DRDY 5 // Change DRDY pin
+
+#define PIN_ON 47
+
 Adafruit_SharpMem display(SCK, MOSI, SHARP_CS, 400, 240);                       // Nastaví display
 Adafruit_MAX31865 thermoPT = Adafruit_MAX31865(MAX31865_CS, MOSI, MISO, SCK);   // Nastaví senzor PT1000
 Adafruit_MAX31856 thermoK = Adafruit_MAX31856(MAX31856_CS, MOSI, MISO, SCK);  // Nastaví senzor K
@@ -55,51 +59,16 @@ WebServer server(80);
 char ssid[] = "laskalab";
 char pass[] = "laskaLAB754125";
 
-void sht4x_init(void)
-{
-	if (!sht4.begin(&Wire))
-	{
-		Serial.println("Couldn't find SHT4x");
-	}
-	sht4.setPrecision(SHT4X_HIGH_PRECISION); // Set sensor precision (HIGH, MED, LOW), different modes affect measurement duration
-}
-
-void thermoK_init()
+void thermoK_init(void)
 {
   if (!thermoK.begin()) {
     Serial.println("Could not initialize thermocouple.");
     while (1) delay(10);
   }
+  pinMode(MAX31856_DRDY, INPUT);
   thermoK.setThermocoupleType(MAX31856_TCTYPE_K);
-  thermoK.setConversionMode(MAX31856_ONESHOT_NOWAIT);
+  thermoK.setConversionMode(MAX31856_CONTINUOUS);
 
-}
-
-int8_t sht4x_errorCheck(void)
-{
-	sensors_event_t humidity, temp;
-	if (!sht4.getEvent(&humidity, &temp)) // populate temp and humidity objects with fresh data
-	{
-		if (!sht4.begin(&Wire))
-		{
-			Serial.println("Couldn't find SHT4x");
-			return -1;
-		}
-	}
-	return 0;
-}
-
-float sht4x_measureTemp(void)
-{
-	sensors_event_t humidity, temp;
-	float temp_value;
-	sht4.getEvent(&humidity, &temp); // populate temp and humidity objects with fresh data
-	temp_value = temp.temperature;	 // read temp value
-	Serial.print("Temperature SHT40: ");
-	Serial.print(temp_value);
-	Serial.println(" degrees C");
-	//   Serial.print("Humidity: "); Serial.print(humidity.relative_humidity); Serial.println("% rH");
-	return temp_value;
 }
 
 float tempPT_measure(void)
@@ -155,25 +124,44 @@ int8_t tempPT_errorCheck(void)
 
 float thermoK_measure(void)
 {
-  float temp = 0;
-  // trigger a conversion, returns immediately
-  thermoK.triggerOneShot();
-
-  delay(500); // replace this with whatever
-
-  // check for conversion complete and read temperature
-  if (thermoK.conversionComplete()) {
-    temp = thermoK.readThermocoupleTemperature();
-    Serial.println(temp);
-  } else {
-    Serial.println("Conversion not complete!");
+  float temp;
+  
+  // Wait for MAX31856 to get data ready
+  while (digitalRead(MAX31856_DRDY))
+  {
+    uint8_t print_timer = 0;
+    if (print_timer == 0)
+    {
+      // Print every 256 cycles
+      Serial.print("Waiting for DRDY pin");
+    }
+    print_timer++;
   }
+  temp = thermoK.readThermocoupleTemperature();
 
 	// Read temperature
 	Serial.print("Inside temperature = ");
 	Serial.println(temp);
 	Serial.println();
 	return temp;
+}
+
+int8_t thermoK_errorCheck(void)
+{
+  uint8_t fault = thermoK.readFault(); 
+  if (fault)
+  {
+    if (fault & MAX31856_FAULT_CJRANGE) Serial.println("Cold Junction Range Fault");
+    if (fault & MAX31856_FAULT_TCRANGE) Serial.println("Thermocouple Range Fault");
+    if (fault & MAX31856_FAULT_CJHIGH)  Serial.println("Cold Junction High Fault");
+    if (fault & MAX31856_FAULT_CJLOW)   Serial.println("Cold Junction Low Fault");
+    if (fault & MAX31856_FAULT_TCHIGH)  Serial.println("Thermocouple High Fault");
+    if (fault & MAX31856_FAULT_TCLOW)   Serial.println("Thermocouple Low Fault");
+    if (fault & MAX31856_FAULT_OVUV)    Serial.println("Over/Under Voltage Fault");
+    if (fault & MAX31856_FAULT_OPEN)    Serial.println("Thermocouple Open Fault");
+    return -1;
+  }
+  return 0;
 }
 
 void displayInit(void)
@@ -220,13 +208,13 @@ void printDisplay(void)
 	display.setCursor(((DISPLAY_WIDTH / 4) - (w / 2)), ((DISPLAY_HEIGHT + h_offset + h) / 2));
 	display.print(buffer);
 
-	if (sht4x_errorCheck() == -1)
+	if (thermoK_errorCheck() == -1)
 	{
 		sprintf(buffer, "E");
 	}
 	else
 	{
-		sprintf(buffer, "%.0f%c", sht4x_measureTemp(), DEGREE_SIGN);
+		sprintf(buffer, "%.0f%c", thermoK_measure(), DEGREE_SIGN);
 	}
 	display.getTextBounds(buffer, 0, 0, &x1, &y1, &w, &h);
 	display.setCursor(((DISPLAY_WIDTH * 0.75) - (w / 2)), ((DISPLAY_HEIGHT + h_offset + h) / 2));
@@ -235,12 +223,12 @@ void printDisplay(void)
 	display.clearDisplay();
 }
 
-void handleRoot()
+void handleRoot(void)
 {
 	server.send_P(200, "text/html", index_html); // Send web page
 }
 
-void handleNotFound()
+void handleNotFound(void)
 {
 	String message = "Error\n\n";
 	message += "URI: ";
@@ -257,7 +245,7 @@ void handleNotFound()
 	server.send(404, "text/plain", message);
 }
 
-void handleMeatTemp()
+void handleMeatTemp(void)
 {
 	if (tempPT_errorCheck() == -1)
 	{
@@ -271,21 +259,21 @@ void handleMeatTemp()
 	}
 }
 
-void handleInnerTemp()
+void handleInnerTemp(void)
 {
-	if (sht4x_errorCheck() == -1)
+	if (thermoK_errorCheck() == -1)
 	{
 		server.send(200, "text/plain", "ERROR");
 	}
 	else
 	{
 		char buff[11] = {0};
-		sprintf(buff, "%0.2f ˚C", sht4x_measureTemp());
+		sprintf(buff, "%0.2f ˚C", thermoK_measure());
 		server.send(200, "text/plain", buff);
 	}
 }
 
-void WiFiInit()
+void WiFiInit(void)
 {
 	// Connecting to WiFi
 	Serial.println();
@@ -314,7 +302,7 @@ void WiFiInit()
 	Serial.println("Wi-Fi connected successfully");
 }
 
-void DNS_setup()
+void DNS_setup(void)
 {
 	if (MDNS.begin(host))
 	{
@@ -326,8 +314,21 @@ void DNS_setup()
 	}
 }
 
+// Non blocking delay, instance can be used only once because of static variable
+uint8_t delay_nonBlocking(uint16_t seconds)
+{
+  static uint32_t last_time = 0;
+  if (millis() >= (last_time + seconds))
+  {
+    last_time = millis();
+    return 1;
+  }
+  return 0;
+}
+
 void setup(void)
 {
+  // Turn on the second stabilisator
   pinMode(PIN_ON, OUTPUT);
   digitalWrite(PIN_ON, HIGH);
   Serial.begin(115200);
@@ -351,6 +352,8 @@ void setup(void)
 void loop(void)
 {
 	server.handleClient();
-	printDisplay();
-  delay(DELAYTIME*1000);
+  if (delay_nonBlocking(DELAYTIME))
+  {
+    printDisplay();
+  }
 }
