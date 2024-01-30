@@ -44,8 +44,6 @@ const char *host = "smokehouse"; // Connect to http://smokehouse.local
 #define DELAYTIME 1   //seconds
 #define DEGREE_SIGN 0x8E
 
-#define MAX31856_DRDY 5 // Change DRDY pin
-
 #define PIN_ON 47
 
 Adafruit_SharpMem display(SCK, MOSI, SHARP_CS, 400, 240);                       // Nastaví display
