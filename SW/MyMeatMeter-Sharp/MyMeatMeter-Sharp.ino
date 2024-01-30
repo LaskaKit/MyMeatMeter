@@ -65,10 +65,8 @@ void thermoK_init(void)
     Serial.println("Could not initialize thermocouple.");
     while (1) delay(10);
   }
-  pinMode(MAX31856_DRDY, INPUT);
   thermoK.setThermocoupleType(MAX31856_TCTYPE_K);
-  thermoK.setConversionMode(MAX31856_CONTINUOUS);
-
+  thermoK.setConversionMode(MAX31856_ONESHOT);
 }
 
 float tempPT_measure(void)
@@ -125,18 +123,6 @@ int8_t tempPT_errorCheck(void)
 float thermoK_measure(void)
 {
   float temp;
-  
-  // Wait for MAX31856 to get data ready
-  while (digitalRead(MAX31856_DRDY))
-  {
-    uint8_t print_timer = 0;
-    if (print_timer == 0)
-    {
-      // Print every 256 cycles
-      Serial.print("Waiting for DRDY pin");
-    }
-    print_timer++;
-  }
   temp = thermoK.readThermocoupleTemperature();
 
 	// Read temperature
