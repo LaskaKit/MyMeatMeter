@@ -1,21 +1,31 @@
-/* Smokehouse temp measurement for PT100/PT1000 sensor and inner temp measurement for SHT4x sensor
- * ESP32 S3 devkit
+/* Smokehouse temp measurement for PT100/PT1000 sensor and inner temp measurement for K thermocoupler
+
+ * List off parts: 
+ *  1x LaskaKit ESPink-Shelf-2.9 ESP32 e-Paper                  https://www.laskakit.cz/laskakit-espink-shelf-2-9-esp32-e-paper/?variantId=14193
+ *  1x LaskaKit MAX31865 převodník pro termočlánek PT100/1000   https://www.laskakit.cz/laskakit-max31865-prevodnik-pro-termoclanek-pt100-1000/
+ *  1x LaskaKit MAX31856 Univerzální převodník pro termočlánek  https://www.laskakit.cz/univerzalni-modul-prevodniku-pro-termoclanky--max31856--spi/
+ *  1x LaskaKit μŠup-SPI 4x na DIP adaptér                      https://www.laskakit.cz/laskakit-sup-spi-4x-na-dip-adapter/
+ *  1x Potravinářský teplotní senzor PT1000, 1.25m              https://www.laskakit.cz/potravinarsky-teplotni-senzor-pt1000--1-25m/
+ *  1x Termočlánek typu K 600C M6 1m                            https://www.laskakit.cz/termoclanek-typu-k-600c-m6-1m/
+ *  3x μŠup-SPI JST-SH 6-pin kabel - 10cm                       https://www.laskakit.cz/--sup-spi-jst-sh-6-pin-kabel-10cm/
+ *  Optional for better wire management: 
+ *  1x μŠup, STEMMA QT, Qwiic JST-SH 4-pin kabel - dupont samice https://www.laskakit.cz/--sup--stemma-qt--qwiic-jst-sh-4-pin-kabel-dupont-samice/
+ * 
  * Email:podpora@laskakit.cz
  * Web:laskakit.cz
  */
+
+
 #include <Arduino.h>
 #include <Wire.h>
-#include <Adafruit_GFX.h>	 // https://github.com/adafruit/Adafruit-GFX-Library
-#include <Adafruit_SharpMem.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
-#include <Adafruit_MAX31865.h>
+#include <Adafruit_MAX31865.h>  // PT100/1000
 #include <Adafruit_MAX31856.h>
 #include "page.h"
 
-#define TOMTHUMB_USE_EXTENDED 1 // Set to 1 to use the extended 128 ASCII character set - Adds degree sign and other useful characters.
-#include "TomThumb.h"
+#include <GxEPD2_BW.h>
 
 #define PT1000 // select sensor type: PT100 or PT1000
 
@@ -29,24 +39,20 @@
 
 const char *host = "smokehouse"; // Connect to http://smokehouse.local
 
-#define DISPLAY_WIDTH 128
-#define DISPLAY_HEIGHT 64
-#define SCK   12          //LaskaKit ESP32-S3-DEVKit
-#define MOSI  11          //LaskaKit ESP32-S3-DEVKit
-#define MISO  13          //LaskaKit ESP32-S3-DEVKit
-#define SHARP_CS    17
-#define MAX31865_CS 18
-#define MAX31856_CS 10
-#define USUP_POWER  47 //uSUP connector power output pin
-#define BLACK 0
-#define WHITE 1
+#define SCK   14
+#define MOSI  13
+#define MISO  12
+#define MAX31865_CS 22    //  21 for SCK I2C µŠup connector (You will can not use I2C if you do so)
+#define MAX31856_CS 27
+#define PIN_ON 2
 
 #define DELAYTIME 1   //seconds
-#define DEGREE_SIGN 0x8E
+#define DEGREE_SIGN 247
 
-#define PIN_ON 47
 
-Adafruit_SharpMem display(SCK, MOSI, SHARP_CS, 400, 240);                       // Nastaví display
+
+GxEPD2_BW<GxEPD2_290_GDEY029T94, GxEPD2_290_GDEY029T94::HEIGHT> display(GxEPD2_290_GDEY029T94(/*CS=5*/ SS, /*DC=*/ 17, /*RST=*/ 16, /*BUSY=*/ 4));     // ESPink-Shelf-213 GDEM0213B74 -> 2.13" 122x250, SSD1680 
+
 Adafruit_MAX31865 thermoPT = Adafruit_MAX31865(MAX31865_CS, MOSI, MISO, SCK);   // Nastaví senzor PT1000
 Adafruit_MAX31856 thermoK = Adafruit_MAX31856(MAX31856_CS, MOSI, MISO, SCK);  // Nastaví senzor K
 
@@ -54,8 +60,8 @@ Adafruit_MAX31856 thermoK = Adafruit_MAX31856(MAX31856_CS, MOSI, MISO, SCK);  //
 WebServer server(80);
 
 /* -----------------WiFi network ---------------- */
-char ssid[] = "laskalab";
-char pass[] = "laskaLAB754125";
+char ssid[] = "laskalab"; // Replace with your SSID
+char pass[] = "laskaLAB754125"; // Replace with your password
 
 void thermoK_init(void)
 {
@@ -64,7 +70,6 @@ void thermoK_init(void)
     while (1) delay(10);
   }
   thermoK.setThermocoupleType(MAX31856_TCTYPE_K);
-  thermoK.setConversionMode(MAX31856_ONESHOT);
 }
 
 float tempPT_measure(void)
@@ -148,35 +153,40 @@ int8_t thermoK_errorCheck(void)
   return 0;
 }
 
-void displayInit(void)
+void display_init(void)
 {
-  display.begin();  // initialization
-  display.setRotation(0); // rotation
-  display.clearDisplay(); // clear display
-  display.setTextColor(BLACK, WHITE); // set color
-	display.setFont(&TomThumb);
+  // turn on power to display
+  char text[10];
+  Serial.println("Display power ON");
+  delay(500); 
+  display.init(); // inicializace
+
+  display.setRotation(1);
+  display.setPartialWindow(0, 0, display.width(), display.height()); // Set display window for fast update
+
+  display.fillScreen(GxEPD_WHITE);
+  display.setTextColor(GxEPD_BLACK);
 }
 
-void printDisplay(void)
+void display_print(void)
 {
 	uint16_t w, h, h_offset;
 	int16_t x1, y1;
 	char buffer[10];
-	display.setTextSize(2);
+
+  display.fillScreen(GxEPD_WHITE);
+
+	display.setTextSize(4);
 	display.getTextBounds("Meat", 0, 0, &x1, &y1, &w, &h);
-	display.setCursor(((DISPLAY_WIDTH / 4) - (w / 2)), h);
+	display.setCursor(((display.width() / 4) - (w / 2)), 0);
 	display.print("Meat");
 
-	display.getTextBounds("Inner", 0, 0, &x1, &y1, &w, &h);
-	display.setCursor(((DISPLAY_WIDTH * 0.75) - (w / 2)), h);
-	display.print("Inner");
-
-  display.getTextBounds("Inside", 0, 0, &x1, &y1, &w, &h);
-	display.setCursor(((DISPLAY_WIDTH * 0.75) - (w / 2)), h);
+	display.getTextBounds("Inside", 0, 0, &x1, &y1, &w, &h);
+	display.setCursor(((display.width() * 0.75) - (w / 2)), 0);
 	display.print("Inside");
 
-	display.drawLine((DISPLAY_WIDTH / 2), 0, (DISPLAY_WIDTH / 2), DISPLAY_HEIGHT, WHITE);
-	display.drawLine(0, h + 2, DISPLAY_WIDTH, h + 2, WHITE);
+	display.drawLine((display.width() / 2), 0, (display.width() / 2), display.height(), GxEPD_BLACK);
+	display.drawLine(0, h + 2, display.width(), h + 2, GxEPD_BLACK);
 
 	if (tempPT_errorCheck() == -1)
 	{
@@ -186,10 +196,10 @@ void printDisplay(void)
 	{
 		sprintf(buffer, "%.0f%c", tempPT_measure(), DEGREE_SIGN);
 	}
-	display.setTextSize(4);
+	display.setTextSize(5);
 	h_offset = h + 2;
 	display.getTextBounds(buffer, 0, 0, &x1, &y1, &w, &h);
-	display.setCursor(((DISPLAY_WIDTH / 4) - (w / 2)), ((DISPLAY_HEIGHT + h_offset + h) / 2));
+	display.setCursor(((display.width() / 4) - (w / 2)), (h_offset + display.height() - h) / 2);
 	display.print(buffer);
 
 	if (thermoK_errorCheck() == -1)
@@ -198,13 +208,26 @@ void printDisplay(void)
 	}
 	else
 	{
-		sprintf(buffer, "%.0f%c", thermoK_measure(), DEGREE_SIGN);
+		sprintf(buffer, "%.0f%c", thermoK_measure(), DEGREE_SIGN    );
 	}
 	display.getTextBounds(buffer, 0, 0, &x1, &y1, &w, &h);
-	display.setCursor(((DISPLAY_WIDTH * 0.75) - (w / 2)), ((DISPLAY_HEIGHT + h_offset + h) / 2));
+	display.setCursor(((display.width() * 0.75) - (w / 2)), (h_offset + display.height() - h) / 2);
 	display.print(buffer);
-	display.refresh();
-	display.clearDisplay();
+ 	display.display(true);
+}
+
+void display_wifi_connecting()
+{
+  uint16_t w, h, h_offset;
+	int16_t x1, y1;
+
+  display.fillScreen(GxEPD_WHITE);
+
+	display.setTextSize(2);
+	display.getTextBounds("Connecting to WiFi...", 0, 0, &x1, &y1, &w, &h);
+	display.setCursor((display.width() - w) / 2, (display.height() - h) / 2);
+	display.print("Connecting to WiFi...");
+  display.display();
 }
 
 void handleRoot(void)
@@ -257,7 +280,7 @@ void handleInnerTemp(void)
 	}
 }
 
-void WiFiInit(void)
+void wifi_init(void)
 {
 	// Connecting to WiFi
 	Serial.println();
@@ -317,7 +340,10 @@ void setup(void)
   digitalWrite(PIN_ON, HIGH);
   Serial.begin(115200);
 
-	WiFiInit();
+  display_init();
+  display_wifi_connecting();
+
+	wifi_init();
 	DNS_setup();
 
 	server.on("/", handleRoot);		   // Main page
@@ -330,7 +356,7 @@ void setup(void)
 	thermoPT.begin(MAX31865_2WIRE); // set to 2WIRE, 3WIRE or 4WIRE as necessary
 	thermoK_init();
 
-  displayInit();
+  display_print();
 }
 
 void loop(void)
@@ -338,6 +364,6 @@ void loop(void)
 	server.handleClient();
   if (delay_nonBlocking(DELAYTIME))
   {
-    printDisplay();
+    display_print();
   }
 }
