@@ -13,6 +13,9 @@
  * 
  * Email:podpora@laskakit.cz
  * Web:laskakit.cz
+ * 
+ * The Pit Barrel Cooker typically maintains an internal temperature between 275°F and 310°F (135 - 155°C)
+ * Ribs cook to 90-95˚C
  */
 
 
@@ -60,8 +63,8 @@ Adafruit_MAX31856 thermoK = Adafruit_MAX31856(MAX31856_CS, MOSI, MISO, SCK);  //
 WebServer server(80);
 
 /* -----------------WiFi network ---------------- */
-char ssid[] = "laskalab"; // Replace with your SSID
-char pass[] = "laskaLAB754125"; // Replace with your password
+char ssid[] = "xxxxx"; // Replace with your SSID
+char pass[] = "xxxxx"; // Replace with your password
 
 void thermoK_init(void)
 {
