@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(arduino-cli core *)",
+      "Read(//Users/konstantinlaska/Documents/Arduino/libraries/**)",
+      "Bash(python3 mock_server.py)",
+      "Bash(pkill -f mock_server.py)"
+    ]
+  }
+}

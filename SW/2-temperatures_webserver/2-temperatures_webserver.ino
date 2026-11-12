@@ -22,6 +22,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
+#include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Adafruit_MAX31865.h>  // PT100/1000
@@ -29,6 +30,9 @@
 #include "page.h"
 
 #include <GxEPD2_BW.h>
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold24pt7b.h>
 
 #define PT1000 // select sensor type: PT100 or PT1000
 
@@ -40,7 +44,8 @@
 #define RNOMINAL 100.0
 #endif
 
-const char *host = "smokehouse"; // Connect to http://smokehouse.local
+const char *host = "mymeatmeter"; // Connect to http://mymeatmeter.local
+#define AP_NAME "MyMeatMeter"    // WiFiManager config portal access point
 
 #define SCK   14
 #define MOSI  13
@@ -50,7 +55,15 @@ const char *host = "smokehouse"; // Connect to http://smokehouse.local
 #define PIN_ON 2
 
 #define DELAYTIME 1   //seconds
-#define DEGREE_SIGN 247
+#define HEADER_HEIGHT 30  // px, header row on the e-ink display
+
+/* ---------------- Temperature history (served as JSON on /history) ---------------- */
+#define HISTORY_INTERVAL 60   // seconds between samples
+#define HISTORY_LENGTH 1440   // 24 h of samples
+float historyMeat[HISTORY_LENGTH];
+float historyInner[HISTORY_LENGTH];
+uint16_t historyHead = 0;   // next write position (ring buffer)
+uint16_t historyCount = 0;  // number of valid samples
 
 
 
@@ -61,10 +74,6 @@ Adafruit_MAX31856 thermoK = Adafruit_MAX31856(MAX31856_CS, MOSI, MISO, SCK);  //
 
 // Set web server port number to 80
 WebServer server(80);
-
-/* -----------------WiFi network ---------------- */
-char ssid[] = "xxxxx"; // Replace with your SSID
-char pass[] = "xxxxx"; // Replace with your password
 
 void thermoK_init(void)
 {
@@ -171,66 +180,104 @@ void display_init(void)
   display.setTextColor(GxEPD_BLACK);
 }
 
+// Print one temperature centered in a column, with a drawn degree mark
+// (FreeSans fonts have no ° glyph)
+void display_temperature(uint16_t col_center, float temp, bool error)
+{
+	uint16_t w, h;
+	int16_t x1, y1;
+	char buffer[8];
+	const uint16_t degree_r = 4;
+	const uint16_t degree_gap = 7;
+
+	if (error)
+	{
+		strcpy(buffer, "ERR");
+	}
+	else
+	{
+		sprintf(buffer, "%.0f", temp);
+	}
+
+	display.setFont(&FreeSansBold24pt7b);
+	display.getTextBounds(buffer, 0, 0, &x1, &y1, &w, &h);
+
+	uint16_t degree_w = error ? 0 : (degree_gap + 2 * degree_r);
+	uint16_t x = col_center - ((w + degree_w) / 2);
+	uint16_t y = HEADER_HEIGHT + ((display.height() - HEADER_HEIGHT - h) / 2); // top edge of text
+
+	display.setCursor(x - x1, y - y1);
+	display.print(buffer);
+
+	if (!error)
+	{
+		display.drawCircle(x + w + degree_gap + degree_r, y + degree_r, degree_r, GxEPD_BLACK);
+		display.drawCircle(x + w + degree_gap + degree_r, y + degree_r, degree_r - 1, GxEPD_BLACK);
+	}
+}
+
+void display_header(uint16_t col_center, const char *label)
+{
+	uint16_t w, h;
+	int16_t x1, y1;
+
+	display.setFont(&FreeSansBold12pt7b);
+	display.getTextBounds(label, 0, 0, &x1, &y1, &w, &h);
+	display.setCursor(col_center - (w / 2) - x1, ((HEADER_HEIGHT - h) / 2) - y1);
+	display.print(label);
+}
+
 void display_print(void)
 {
-	uint16_t w, h, h_offset;
+	display.fillScreen(GxEPD_WHITE);
+
+	display_header(display.width() / 4, "Meat");
+	display_header((display.width() * 3) / 4, "Inside");
+
+	display.drawLine(display.width() / 2, 0, display.width() / 2, display.height(), GxEPD_BLACK);
+	display.drawLine(0, HEADER_HEIGHT, display.width(), HEADER_HEIGHT, GxEPD_BLACK);
+
+	bool errorPT = (tempPT_errorCheck() == -1);
+	display_temperature(display.width() / 4, errorPT ? 0 : tempPT_measure(), errorPT);
+
+	bool errorK = (thermoK_errorCheck() == -1);
+	display_temperature((display.width() * 3) / 4, errorK ? 0 : thermoK_measure(), errorK);
+
+	display.display(true);
+}
+
+// Print one line of text horizontally centered, y_top = top edge of the line
+void display_centered(const char *text, uint16_t y_top)
+{
+	uint16_t w, h;
 	int16_t x1, y1;
-	char buffer[10];
 
-  display.fillScreen(GxEPD_WHITE);
-
-	display.setTextSize(4);
-	display.getTextBounds("Meat", 0, 0, &x1, &y1, &w, &h);
-	display.setCursor(((display.width() / 4) - (w / 2)), 0);
-	display.print("Meat");
-
-	display.getTextBounds("Inside", 0, 0, &x1, &y1, &w, &h);
-	display.setCursor(((display.width() * 0.75) - (w / 2)), 0);
-	display.print("Inside");
-
-	display.drawLine((display.width() / 2), 0, (display.width() / 2), display.height(), GxEPD_BLACK);
-	display.drawLine(0, h + 2, display.width(), h + 2, GxEPD_BLACK);
-
-	if (tempPT_errorCheck() == -1)
-	{
-		sprintf(buffer, "E");
-	}
-	else
-	{
-		sprintf(buffer, "%.0f%c", tempPT_measure(), DEGREE_SIGN);
-	}
-	display.setTextSize(5);
-	h_offset = h + 2;
-	display.getTextBounds(buffer, 0, 0, &x1, &y1, &w, &h);
-	display.setCursor(((display.width() / 4) - (w / 2)), (h_offset + display.height() - h) / 2);
-	display.print(buffer);
-
-	if (thermoK_errorCheck() == -1)
-	{
-		sprintf(buffer, "E");
-	}
-	else
-	{
-		sprintf(buffer, "%.0f%c", thermoK_measure(), DEGREE_SIGN    );
-	}
-	display.getTextBounds(buffer, 0, 0, &x1, &y1, &w, &h);
-	display.setCursor(((display.width() * 0.75) - (w / 2)), (h_offset + display.height() - h) / 2);
-	display.print(buffer);
- 	display.display(true);
+	display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+	display.setCursor(((display.width() - w) / 2) - x1, y_top - y1);
+	display.print(text);
 }
 
 void display_wifi_connecting()
 {
-  uint16_t w, h, h_offset;
-	int16_t x1, y1;
+	display.fillScreen(GxEPD_WHITE);
+	display.setFont(&FreeSansBold12pt7b);
+	display_centered("Connecting to WiFi...", (display.height() / 2) - 9);
+	display.display();
+}
 
-  display.fillScreen(GxEPD_WHITE);
+// Shown when WiFiManager starts the config portal (no saved WiFi / connection failed)
+void display_wifi_config(WiFiManager *wm)
+{
+	display.fillScreen(GxEPD_WHITE);
 
-	display.setTextSize(2);
-	display.getTextBounds("Connecting to WiFi...", 0, 0, &x1, &y1, &w, &h);
-	display.setCursor((display.width() - w) / 2, (display.height() - h) / 2);
-	display.print("Connecting to WiFi...");
-  display.display();
+	display.setFont(&FreeSansBold12pt7b);
+	display_centered("WiFi setup", 10);
+
+	display.setFont(&FreeSansBold9pt7b);
+	display_centered("Connect to WiFi \"" AP_NAME "\"", 58);
+	display_centered("and open 192.168.4.1", 88);
+
+	display.display();
 }
 
 void handleRoot(void)
@@ -285,31 +332,21 @@ void handleInnerTemp(void)
 
 void wifi_init(void)
 {
-	// Connecting to WiFi
-	Serial.println();
-	Serial.print("Connecting to...");
-	Serial.println(ssid);
+	WiFiManager wm;
 
-	WiFi.begin(ssid, pass);
+	wm.setAPCallback(display_wifi_config); // show instructions on the e-ink display
+	wm.setConfigPortalTimeout(180);        // seconds, then retry saved credentials
 
-	int i = 0;
-	while (WiFi.status() != WL_CONNECTED)
+	// Connects with saved credentials; on failure starts the config portal
+	if (!wm.autoConnect(AP_NAME))
 	{
-		delay(1000);
-		i++;
-		if (i == 10)
-		{
-			i = 0;
-			Serial.println("");
-			Serial.println("Not able to connect");
-		}
-		else
-		{
-			Serial.print(".");
-		}
+		Serial.println("Config portal timed out, restarting...");
+		ESP.restart();
 	}
-	Serial.println("");
+
 	Serial.println("Wi-Fi connected successfully");
+	Serial.print("IP address: ");
+	Serial.println(WiFi.localIP());
 }
 
 void DNS_setup(void)
@@ -324,16 +361,63 @@ void DNS_setup(void)
 	}
 }
 
-// Non blocking delay, instance can be used only once because of static variable
-uint8_t delay_nonBlocking(uint16_t seconds)
+// Non blocking timer, caller keeps its own last_time so it can be used for
+// several independent intervals (also survives millis() rollover)
+uint8_t timer_elapsed(uint32_t *last_time, uint32_t interval_ms)
 {
-  static uint32_t last_time = 0;
-  if (millis() >= (last_time + seconds))
+  if ((millis() - *last_time) >= interval_ms)
   {
-    last_time = millis();
+    *last_time = millis();
     return 1;
   }
   return 0;
+}
+
+void history_sample(void)
+{
+	historyMeat[historyHead] = (tempPT_errorCheck() == -1) ? NAN : tempPT_measure();
+	historyInner[historyHead] = (thermoK_errorCheck() == -1) ? NAN : thermoK_measure();
+	historyHead = (historyHead + 1) % HISTORY_LENGTH;
+	if (historyCount < HISTORY_LENGTH)
+	{
+		historyCount++;
+	}
+}
+
+void history_appendSeries(String &json, const float *series)
+{
+	char buf[12];
+	for (uint16_t i = 0; i < historyCount; i++)
+	{
+		uint16_t idx = (historyHead + HISTORY_LENGTH - historyCount + i) % HISTORY_LENGTH;
+		if (isnan(series[idx]))
+		{
+			strcpy(buf, "null");
+		}
+		else
+		{
+			sprintf(buf, "%.1f", series[idx]);
+		}
+		if (i)
+		{
+			json += ',';
+		}
+		json += buf;
+	}
+}
+
+void handleHistory(void)
+{
+	String json;
+	json.reserve((historyCount * 14) + 64);
+	json = "{\"interval\":";
+	json += HISTORY_INTERVAL;
+	json += ",\"meat\":[";
+	history_appendSeries(json, historyMeat);
+	json += "],\"inner\":[";
+	history_appendSeries(json, historyInner);
+	json += "]}";
+	server.send(200, "application/json", json);
 }
 
 void setup(void)
@@ -353,20 +437,30 @@ void setup(void)
 	server.onNotFound(handleNotFound); // Function done when hangle is not found
 	server.on("/readMeatTemp", handleMeatTemp);
 	server.on("/readInnerTemp", handleInnerTemp);
+	server.on("/history", handleHistory);
 	server.begin();
 	Serial.println("HTTP server started");
 
 	thermoPT.begin(MAX31865_2WIRE); // set to 2WIRE, 3WIRE or 4WIRE as necessary
 	thermoK_init();
 
+	history_sample(); // first sample right away so the chart is not empty
   display_print();
 }
 
 void loop(void)
 {
+	static uint32_t display_timer = 0;
+	static uint32_t history_timer = 0;
+
 	server.handleClient();
-  if (delay_nonBlocking(DELAYTIME))
-  {
-    display_print();
-  }
+
+	if (timer_elapsed(&display_timer, DELAYTIME * 1000UL))
+	{
+		display_print();
+	}
+	if (timer_elapsed(&history_timer, HISTORY_INTERVAL * 1000UL))
+	{
+		history_sample();
+	}
 }
